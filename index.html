@@ -198,14 +198,14 @@
   </header>
 
   <div class="screen" id="screen">
-    <canvas id="history" tabindex="0" aria-label="Input and output level over the last few seconds."></canvas>
+    <canvas id="history" tabindex="0" aria-label="A little room that grows, reshapes and lights up as the knobs turn."></canvas>
     <canvas id="meter" aria-hidden="true"></canvas>
   </div>
 
   <footer class="bar bottom" id="knob-row"></footer>
 </div>
 <p class="no-worklet" id="no-worklet" hidden>This browser can't run Egret Freeverb (it needs AudioWorklet). Try a current Chrome, Edge, Firefox or Safari.</p>
-<p class="help">SIZE sets how long the tail takes to decay, DAMP how quickly its high end dies away; PREDELAY gives the dry sound a moment before the reverb arrives; WIDTH narrows or widens the tail's stereo spread; LOW CUT and HIGH CUT shape what gets fed into the tank in the first place (cut the lows so the reverb doesn't get muddy, cut the highs so it doesn't get harsh); TONE is a gentle lowpass after the tank; MIX blends it with the dry signal. Click a knob's value to type one. <kbd>Space</kbd> plays the source.</p>
+<p class="help">The room in the screen is the reverb: SIZE grows or shrinks it, DAMP (inversely) raises or lowers its ceiling, WIDTH stretches it and adds more walls as it opens up. LOW CUT tints the floor and HIGH CUT tints the walls (what gets fed into the tank); TONE washes the room warmer or cooler; the walls light up with the sound after a gap set by PREDELAY, by an amount set by MIX. SIZE sets how long the tail takes to decay, DAMP how quickly its high end dies away. Click a knob's value to type one. <kbd>Space</kbd> plays the source.</p>
 </div>
 </div>
 
@@ -437,7 +437,9 @@ if (typeof registerProcessor === 'function') {
       axisLabel: 'rgba(42,36,29,0.55)',
       meterBg: '#ece4cf', meterTrack: 'rgba(42,36,29,0.08)', meterLow: '#c9a35a', meterMid: '#a8700a', meterTop: '#6b4a10',
       meterText: 'rgba(42,36,29,0.75)',
-      histIn: 'rgba(42,36,29,0.12)', histInLine: 'rgba(42,36,29,0.4)'
+      roomFloorCool: '#cdd9df', roomFloorWarm: '#e4d2a6',
+      roomWallDim: '#c7bb9c', roomWallBright: '#efe2c0',
+      roomEdge: 'rgba(42,36,29,0.3)', roomGlow: '#a8700a', roomSource: '#2a241d'
     },
     dark: {
       bgTop: '#1d170c', bgBottom: '#120e06', gridMajor: 'rgba(240,168,48,0.15)', gridMinor: 'rgba(240,168,48,0.06)',
@@ -445,7 +447,9 @@ if (typeof registerProcessor === 'function') {
       axisLabel: 'rgba(242,236,217,0.5)',
       meterBg: '#120e06', meterTrack: 'rgba(240,168,48,0.08)', meterLow: '#7a5a18', meterMid: '#f0a830', meterTop: '#f2ecd9',
       meterText: 'rgba(242,236,217,0.75)',
-      histIn: 'rgba(242,236,217,0.10)', histInLine: 'rgba(242,236,217,0.32)'
+      roomFloorCool: '#1f2a33', roomFloorWarm: '#3a2a16',
+      roomWallDim: '#241c10', roomWallBright: '#4a3a20',
+      roomEdge: 'rgba(240,168,48,0.35)', roomGlow: '#f0a830', roomSource: '#f2ecd9'
     }
   };
   var T = THEMES.dark;
@@ -815,7 +819,7 @@ if (typeof registerProcessor === 'function') {
   function changed(){
     sendParams(); save(); scheduleCommit();
     if (presetName && presetName.slice(-9) !== ' (edited)') presetName += ' (edited)';
-    renderKnobs(); renderPresetName();
+    renderKnobs(); renderPresetName(); requestDraw();
   }
   function renderAll(){
     renderKnobs(); renderPresetName(); renderUndo(); renderAB(); requestDraw();
@@ -985,13 +989,15 @@ if (typeof registerProcessor === 'function') {
     showMenu($('preset-btn'), items);
   });
 
-  // ---------- the display: a plain input/output level history (no transfer curve --
-  // reverb doesn't have one) and a simple two-bar meter ----------
+  // ---------- the display: a little room, drawn in isometric cutaway, that actually
+  // grows/shrinks/reshapes itself as the knobs turn -- Size is its footprint, Damp is
+  // (inversely) its ceiling height, Width is both its wall count and how wide it's
+  // stretched, Low Cut/High Cut tint the floor and walls, and Predelay is a literal
+  // visual delay between a pulse at the source (in the middle) and the walls lighting
+  // up with it -- plus a simple two-bar meter ----------
   var historyCanvas = $('history'), hg = historyCanvas.getContext('2d');
   var meterCanvas = $('meter'), mg = meterCanvas.getContext('2d');
-  var DB_MIN = -60, DB_MAX = 6;
   var hView = { w: 0, h: 0, dpr: 1, pad: 10 };
-  function hy(db){ return (hView.h - hView.pad) - (db - DB_MIN) / (DB_MAX - DB_MIN) * (hView.h - hView.pad - 10); }
   function fitScreen(){
     var dpr = window.devicePixelRatio || 1, r = historyCanvas.getBoundingClientRect();
     if (!r.width) return;
@@ -1002,16 +1008,57 @@ if (typeof registerProcessor === 'function') {
     requestDraw();
   }
 
-  var HIST_LEN = 180;
-  var histIn = new Array(HIST_LEN).fill(DB_MIN), histOut = new Array(HIST_LEN).fill(DB_MIN);
-  function historyPath(hist, W){
-    hg.beginPath();
-    for (var i = 0; i < hist.length; i++) {
-      var x = i / (hist.length - 1) * W, y = hy(Math.max(DB_MIN, Math.min(DB_MAX, hist[i])));
-      if (i === 0) hg.moveTo(x, y); else hg.lineTo(x, y);
-    }
+  function hexToRgb(h){ h = h.replace('#', ''); if (h.length === 3) h = h.split('').map(function(c){ return c + c; }).join(''); var n = parseInt(h, 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function mixHex(h1, h2, t){
+    t = Math.max(0, Math.min(1, t));
+    var a = hexToRgb(h1), b = hexToRgb(h2);
+    return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * t) + ',' + Math.round(a[1] + (b[1] - a[1]) * t) + ',' + Math.round(a[2] + (b[2] - a[2]) * t) + ')';
   }
-  function drawHistory(){
+
+  // the room's own displayed state glides toward the knobs' targets, so turning Size
+  // or Width is seen as the room actually growing, not snapping
+  var roomVis = { size: params.sizePct, damp: params.dampPct, width: params.widthPct, predelay: params.predelayMs, lowcut: params.lowCutHz, highcut: params.highCutHz, tone: params.tonePct, mix: params.mixPct };
+  function roomSettled(){
+    return Math.abs(roomVis.size - params.sizePct) < 0.05 && Math.abs(roomVis.damp - params.dampPct) < 0.05 &&
+           Math.abs(roomVis.width - params.widthPct) < 0.05 && Math.abs(roomVis.predelay - params.predelayMs) < 0.05 &&
+           Math.abs(roomVis.lowcut - params.lowCutHz) < 1 && Math.abs(roomVis.highcut - params.highCutHz) < 1 &&
+           Math.abs(roomVis.tone - params.tonePct) < 0.05 && Math.abs(roomVis.mix - params.mixPct) < 0.05;
+  }
+  function updateRoomVis(){
+    var k = 0.08;
+    roomVis.size += (params.sizePct - roomVis.size) * k;
+    roomVis.damp += (params.dampPct - roomVis.damp) * k;
+    roomVis.width += (params.widthPct - roomVis.width) * k;
+    roomVis.predelay += (params.predelayMs - roomVis.predelay) * k;
+    roomVis.lowcut += (params.lowCutHz - roomVis.lowcut) * k;
+    roomVis.highcut += (params.highCutHz - roomVis.highcut) * k;
+    roomVis.tone += (params.tonePct - roomVis.tone) * k;
+    roomVis.mix += (params.mixPct - roomVis.mix) * k;
+  }
+
+  // a short history of the source's own glow, so the walls can be lit with a delayed
+  // copy of it -- Predelay made visible
+  var glowHistory = [], wallGlowShown = 0;
+  function pushGlow(v){
+    var now = performance.now();
+    glowHistory.push({ t: now, v: v });
+    while (glowHistory.length > 2 && now - glowHistory[0].t > 400) glowHistory.shift();
+  }
+  function delayedGlow(ms){
+    if (!glowHistory.length) return 0;
+    var target = performance.now() - ms;
+    for (var i = glowHistory.length - 1; i >= 0; i--) {
+      if (glowHistory[i].t <= target) {
+        var a = glowHistory[i], b = glowHistory[i + 1];
+        if (!b) return a.v;
+        var t = (target - a.t) / (b.t - a.t);
+        return a.v + (b.v - a.v) * t;
+      }
+    }
+    return glowHistory[0].v;
+  }
+
+  function drawRoom(){
     var dpr = hView.dpr, W = hView.w, H = hView.h;
     if (!W) return;
     hg.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1019,30 +1066,80 @@ if (typeof registerProcessor === 'function') {
     grd.addColorStop(0, T.bgTop); grd.addColorStop(1, T.bgBottom);
     hg.fillStyle = grd; hg.fillRect(0, 0, W, H);
 
-    hg.strokeStyle = T.gridMajor; hg.lineWidth = 1;
-    for (var db = DB_MIN; db <= DB_MAX; db += 12) {
-      hg.beginPath(); hg.moveTo(0, hy(db)); hg.lineTo(W, hy(db)); hg.stroke();
-      hg.fillStyle = T.axisLabel; hg.font = '9px "IBM Plex Mono", monospace'; hg.textBaseline = 'bottom'; hg.textAlign = 'left';
-      hg.fillText(db + '', 4, hy(db) - 2);
+    var cx = W / 2, cy = H * 0.58;
+    var sizeT = roomVis.size / 100;
+    var widthT = Math.max(0, Math.min(1, roomVis.width / 200));
+    var N = Math.max(4, Math.min(8, 4 + Math.round(widthT * 4)));
+    var stretch = 0.78 + widthT * 0.68;
+    var R = Math.min(W, H * 1.6) * 0.165 * (0.55 + sizeT * 0.85);
+    var hMax = Math.min(W, H) * 0.42, hMin = Math.min(W, H) * 0.14;
+    var roomH = hMax - (roomVis.damp / 100) * (hMax - hMin);
+
+    function iso(x, y, z){ return { x: cx + (x * stretch - y) * 0.8660254, y: cy + (x * stretch + y) * 0.5 - z }; }
+
+    var floorPts = [], startAngle = -Math.PI / 2 + Math.PI / N;
+    for (var i = 0; i < N; i++) { var a = startAngle + i * (Math.PI * 2 / N); floorPts.push({ x: Math.cos(a) * R, y: Math.sin(a) * R }); }
+    var pf = floorPts.map(function(p){ return iso(p.x, p.y, 0); });
+    var pc = floorPts.map(function(p){ return iso(p.x, p.y, roomH); });
+
+    var lowT = toT(KNOB_DEFS.lowcut, roomVis.lowcut), highT = toT(KNOB_DEFS.highcut, roomVis.highcut);
+    var floorColor = mixHex(T.roomFloorCool, T.roomFloorWarm, lowT);
+    var wallBase = mixHex(T.roomWallDim, T.roomWallBright, highT);
+
+    // floor
+    hg.beginPath();
+    pf.forEach(function(p, i){ if (i === 0) hg.moveTo(p.x, p.y); else hg.lineTo(p.x, p.y); });
+    hg.closePath();
+    hg.fillStyle = floorColor; hg.fill();
+    hg.strokeStyle = T.roomEdge; hg.lineWidth = 1; hg.stroke();
+
+    // the source's glow (direct, undelayed) and the walls' glow (delayed by Predelay,
+    // scaled by Mix -- how much of the "wet" reverb you'd actually hear)
+    var inLvl = Math.max(meterShown[0], meterShown[1]);
+    var sourceGlow = Math.min(1, inLvl * 6);
+    pushGlow(sourceGlow);
+    var delayed = delayedGlow(roomVis.predelay);
+    var mixAmt = 0.12 + (roomVis.mix / 100) * 0.88;
+    var decay = Math.max(0.85, Math.min(0.985, 0.90 + (roomVis.size / 100) * 0.06 - (roomVis.damp / 100) * 0.05));
+    wallGlowShown = Math.max(delayed * mixAmt, wallGlowShown * decay);
+
+    // walls: cull the one or two nearest the camera so you can see inside (a dollhouse
+    // cutaway), draw the rest far-to-near
+    var walls = [];
+    for (var i = 0; i < N; i++) {
+      var j = (i + 1) % N, mx = (floorPts[i].x + floorPts[j].x) / 2, my = (floorPts[i].y + floorPts[j].y) / 2;
+      var nlen = Math.sqrt(mx * mx + my * my) || 1;
+      walls.push({ i: i, j: j, nx: mx / nlen, ny: my / nlen, facing: mx / nlen + my / nlen, depth: pf[i].y + pf[j].y });
     }
-    hg.strokeStyle = T.zero; hg.beginPath(); hg.moveTo(0, hy(0)); hg.lineTo(W, hy(0)); hg.stroke();
+    walls.sort(function(a, b){ return a.depth - b.depth; });
+    walls.forEach(function(w){
+      if (w.facing > 0.05) return;
+      var a = pf[w.i], b = pf[w.j], ca = pc[w.i], cb = pc[w.j];
+      hg.beginPath();
+      hg.moveTo(a.x, a.y); hg.lineTo(b.x, b.y); hg.lineTo(cb.x, cb.y); hg.lineTo(ca.x, ca.y); hg.closePath();
+      var shade = 0.55 + 0.45 * Math.max(0, -(w.nx * 0.3 + w.ny * 0.95));
+      hg.fillStyle = wallBase; hg.fill();
+      hg.fillStyle = shade > 0.78 ? 'rgba(255,255,255,' + ((shade - 0.78) * 1.1).toFixed(2) + ')' : 'rgba(0,0,0,' + ((0.78 - shade) * 0.6).toFixed(2) + ')';
+      hg.fill();
+      if (wallGlowShown > 0.015) { hg.globalAlpha = Math.min(0.55, wallGlowShown); hg.fillStyle = T.roomGlow; hg.fill(); hg.globalAlpha = 1; }
+      hg.strokeStyle = T.roomEdge; hg.lineWidth = 1; hg.stroke();
+    });
 
-    historyPath(histIn, W);
-    hg.lineTo(W, hy(DB_MIN)); hg.lineTo(0, hy(DB_MIN)); hg.closePath();
-    hg.fillStyle = T.histIn; hg.fill();
-    hg.strokeStyle = T.histInLine; hg.lineWidth = 1; historyPath(histIn, W); hg.stroke();
+    // Tone: a faint overall wash, cool toward one end and warm toward the other
+    hg.globalAlpha = 0.05;
+    hg.fillStyle = mixHex('#2a5aa0', '#e8972c', roomVis.tone / 100);
+    hg.fillRect(0, 0, W, H);
+    hg.globalAlpha = 1;
 
-    historyPath(histOut, W);
-    hg.strokeStyle = T.curve; hg.lineWidth = 2; hg.shadowColor = T.curveGlow; hg.shadowBlur = 5;
-    hg.stroke(); hg.shadowBlur = 0;
+    // the source, pulsing with the input level
+    var srcP = iso(0, 0, Math.min(10, roomH * 0.08)), srcR = 4 + sourceGlow * 5;
+    hg.beginPath(); hg.arc(srcP.x, srcP.y, srcR, 0, Math.PI * 2);
+    hg.fillStyle = T.roomSource; hg.globalAlpha = 0.5 + sourceGlow * 0.5; hg.fill(); hg.globalAlpha = 1;
   }
 
   var meterShown = [0, 0, 0, 0];
   function onMeter(m){
     for (var i = 0; i < 4; i++) meterShown[i] = Math.max(m[i], meterShown[i] * 0.8);
-    var inLvl = Math.max(m[0], m[1]), outLvl = Math.max(m[2], m[3]);
-    histIn.push(inLvl > 1e-6 ? 20 * Math.log10(inLvl) : DB_MIN); histIn.shift();
-    histOut.push(outLvl > 1e-6 ? 20 * Math.log10(outLvl) : DB_MIN); histOut.shift();
   }
   function drawMeter(){
     var dpr = hView.dpr, W = meterCanvas.width / dpr, H = meterCanvas.height / dpr;
@@ -1071,8 +1168,9 @@ if (typeof registerProcessor === 'function') {
     drawQueued = false;
     var live = isPowered() && ctx && ctx.state === 'running';
     if (live) for (var i = 0; i < 4; i++) meterShown[i] *= 0.96;
-    drawHistory(); drawMeter();
-    if (live) requestDraw();
+    updateRoomVis();
+    drawRoom(); drawMeter();
+    if (live || !roomSettled() || wallGlowShown > 0.015) requestDraw();
   }
 
   // ---------- misc UI ----------
