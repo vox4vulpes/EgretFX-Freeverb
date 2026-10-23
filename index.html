@@ -1147,21 +1147,23 @@ if (typeof registerProcessor === 'function') {
     hg.beginPath(); hg.arc(srcP.x, srcP.y, srcR, 0, Math.PI * 2);
     hg.fillStyle = T.roomSource; hg.globalAlpha = 0.5 + sourceGlow * 0.5; hg.fill(); hg.globalAlpha = 1;
 
-    // the listener: a little head with two ears, spreading apart with Width -- the
-    // most literal way Width can be seen, not just heard. A stem grounds it to its
-    // spot on the floor and a soft shadow keeps it from looking like it's floating.
+    // the listener: a little triangle head, its left and right corners picked out in
+    // red for ears -- spreading apart with Width, the most literal way Width can be
+    // seen, not just heard. A stem grounds it to its spot on the floor and a soft
+    // shadow keeps it from looking like it's floating.
     var headP = iso(headLocal.x, headLocal.y, 0);
     var headR = 9 + sizeT * 3, headCy = headP.y - headR * 2.4;
     hg.beginPath(); hg.ellipse(headP.x, headP.y, headR * 0.8, headR * 0.3, 0, 0, Math.PI * 2);
     hg.fillStyle = 'rgba(0,0,0,0.25)'; hg.fill();
     hg.strokeStyle = T.roomSource; hg.lineWidth = 2;
-    hg.beginPath(); hg.moveTo(headP.x, headP.y - 1); hg.lineTo(headP.x, headCy + headR * 0.7); hg.stroke();
-    var earDist = headR * 0.8 + widthT * 10, earCy = headCy - headR * 0.45, earR = headR * 0.4;
-    hg.fillStyle = T.roomSource; hg.strokeStyle = T.roomEdge; hg.lineWidth = 1;
-    [-1, 1].forEach(function(side){
-      hg.beginPath(); hg.arc(headP.x + side * earDist, earCy, earR, 0, Math.PI * 2); hg.fill(); hg.stroke();
-    });
-    hg.beginPath(); hg.arc(headP.x, headCy, headR, 0, Math.PI * 2); hg.fill(); hg.stroke();
+    hg.beginPath(); hg.moveTo(headP.x, headP.y - 1); hg.lineTo(headP.x, headCy + headR * 0.9); hg.stroke();
+    var baseHalf = headR * 0.95 + widthT * 10, triTop = headCy - headR, triBase = headCy + headR * 0.85;
+    var apex = { x: headP.x, y: triTop }, left = { x: headP.x - baseHalf, y: triBase }, right = { x: headP.x + baseHalf, y: triBase };
+    hg.beginPath(); hg.moveTo(apex.x, apex.y); hg.lineTo(left.x, left.y); hg.lineTo(right.x, right.y); hg.closePath();
+    hg.fillStyle = T.roomSource; hg.fill(); hg.strokeStyle = T.roomEdge; hg.lineWidth = 1; hg.stroke();
+    var earR = headR * 0.38;
+    hg.fillStyle = '#e04438'; hg.strokeStyle = T.roomEdge; hg.lineWidth = 1;
+    [left, right].forEach(function(p){ hg.beginPath(); hg.arc(p.x, p.y, earR, 0, Math.PI * 2); hg.fill(); hg.stroke(); });
   }
 
   var meterShown = [0, 0, 0, 0];
