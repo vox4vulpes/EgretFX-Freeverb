@@ -1043,7 +1043,7 @@ if (typeof registerProcessor === 'function') {
   // the image-source trick: each bounce is a circle centred on the source mirrored
   // across that wall, clipped to the room -- so the arc you see inside the room is
   // exactly where the true reflected wavefront would be
-  var wavePulses = [], lastPulseTime = 0;
+  var wavePulses = [], lastPulseTime = 0, waveAvgLvl = 0;
   function pushGlow(v){
     var now = performance.now();
     glowHistory.push({ t: now, v: v });
@@ -1101,12 +1101,13 @@ if (typeof registerProcessor === 'function') {
     var wallDecay = Math.max(0.85, Math.min(0.985, 0.90 + (roomVis.size / 100) * 0.06 - (roomVis.damp / 100) * 0.05));
     wallGlowShown = Math.max(delayed * mixAmt, wallGlowShown * wallDecay);
 
-    // a new wave leaves the source once a second, while the plugin's powered up -- a
-    // fixed speed, so a bigger Size genuinely takes longer to reach the walls and
-    // bounce. Its strength still follows the input level, just not its timing.
+    // a wave leaves the source on an actual peak in the input -- compared against a
+    // slow-moving average of its own recent level, not a fixed loudness, so it still
+    // catches a drum hit over a sustained chord, and stays quiet with no signal at all
     var now = performance.now();
-    if (isPowered() && now - lastPulseTime >= 1000) {
-      wavePulses.push({ t0: now, strength: 0.4 + sourceGlow * 0.6 });
+    waveAvgLvl += (inLvl - waveAvgLvl) * 0.01;
+    if (inLvl > waveAvgLvl * 1.6 + 0.015 && inLvl > 0.03 && now - lastPulseTime > 110) {
+      wavePulses.push({ t0: now, strength: Math.max(0.4, sourceGlow) });
       if (wavePulses.length > 24) wavePulses.shift();
       lastPulseTime = now;
     }
