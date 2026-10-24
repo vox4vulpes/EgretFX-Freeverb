@@ -205,7 +205,7 @@
   <footer class="bar bottom" id="knob-row"></footer>
 </div>
 <p class="no-worklet" id="no-worklet" hidden>This browser can't run Egret Freeverb (it needs AudioWorklet). Try a current Chrome, Edge, Firefox or Safari.</p>
-<p class="help">The room in the screen is the reverb: SIZE grows or shrinks it, DAMP (inversely) raises or lowers its ceiling, WIDTH stretches it and spreads the little listener's ears apart. Drag the listener itself anywhere in the room: closer to the source sounds drier, farther away sounds wetter, and standing off to one side pans the direct sound toward that ear. LOW CUT tints the floor and HIGH CUT tints the walls (what gets fed into the tank); TONE washes the room warmer or cooler; the walls light up with the source's sound after a gap set by PREDELAY, by an amount set by MIX. SIZE sets how long the tail takes to decay, DAMP how quickly its high end dies away. Click a knob's value to type one. <kbd>Space</kbd> plays the source.</p>
+<p class="help">The room in the screen is the reverb: SIZE grows or shrinks it, DAMP (inversely) raises or lowers its ceiling, WIDTH stretches it and spreads the little listener's ears apart. Drag the listener itself anywhere in the room: closer to the source sounds drier, farther away sounds wetter, and standing off to one side pans the direct sound toward that ear (the tail leans the same way too, just much more gently). LOW CUT tints the floor and HIGH CUT tints the walls (what gets fed into the tank); TONE washes the room warmer or cooler; the walls light up with the source's sound after a gap set by PREDELAY, by an amount set by MIX. SIZE sets how long the tail takes to decay, DAMP how quickly its high end dies away. Click a knob's value to type one. <kbd>Space</kbd> plays the source.</p>
 </div>
 </div>
 
@@ -284,7 +284,7 @@ function ReverbEngine(fs){
   this.tonePct = 65; this.tTonePct = 65;
   this.mixPct = 35; this.tMixPct = 35;
   this.listenerX = 0; this.tListenerX = 0; this.listenerY = 50; this.tListenerY = 50;
-  this.distMix = 1; this.panGL = 1; this.panGR = 1;
+  this.distMix = 1; this.panGL = 1; this.panGR = 1; this.tailPanGL = 1; this.tailPanGR = 1;
   this.power = 1; this.tPower = 1;
   this.glide = 1 - Math.exp(-1 / (0.05 * fs));
 
@@ -342,6 +342,9 @@ ReverbEngine.prototype.process = function(inL, inR, outL, outR, n){
       this.distMix = Math.max(0.6, Math.min(1.4, 0.6 + Math.min(1.3, dist / 2) * 0.8));   // =1 at the default spot
       var panNorm = Math.max(-1, Math.min(1, lx)), panAngle = (panNorm * 0.5 + 0.5) * (Math.PI / 2);
       this.panGL = Math.cos(panAngle) * Math.SQRT2; this.panGR = Math.sin(panAngle) * Math.SQRT2;
+      // the diffuse tail arrives from every direction at once, so it only leans the
+      // same way gently -- a much weaker echo of the direct sound's own pan
+      this.tailPanGL = 1 + (this.panGL - 1) * 0.35; this.tailPanGR = 1 + (this.panGR - 1) * 0.35;
     }
     this._cc++;
 
@@ -378,7 +381,7 @@ ReverbEngine.prototype.process = function(inL, inR, outL, outR, n){
     // width: mid/side on the wet tail only
     var widthAmt = Math.max(0, Math.min(2, this.widthPct / 100));
     var mid = (sumL + sumR) * 0.5, side = (sumL - sumR) * 0.5 * widthAmt;
-    var wetL = mid + side, wetR = mid - side;
+    var wetL = (mid + side) * this.tailPanGL, wetR = (mid - side) * this.tailPanGR;
 
     var mix = Math.max(0, Math.min(1, (this.mixPct / 100) * this.distMix));
     var pdl = dl * this.panGL, pdr = dr * this.panGR;
