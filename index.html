@@ -198,14 +198,14 @@
   </header>
 
   <div class="screen" id="screen">
-    <canvas id="history" tabindex="0" aria-label="A little room that grows, reshapes and lights up as the knobs turn."></canvas>
+    <canvas id="history" tabindex="0" aria-label="A little room that grows, reshapes and lights up as the knobs turn. Drag the listener to change how the reverb sounds from where they stand."></canvas>
     <canvas id="meter" aria-hidden="true"></canvas>
   </div>
 
   <footer class="bar bottom" id="knob-row"></footer>
 </div>
 <p class="no-worklet" id="no-worklet" hidden>This browser can't run Egret Freeverb (it needs AudioWorklet). Try a current Chrome, Edge, Firefox or Safari.</p>
-<p class="help">The room in the screen is the reverb: SIZE grows or shrinks it, DAMP (inversely) raises or lowers its ceiling, WIDTH stretches it and spreads the little listener's ears apart. LOW CUT tints the floor and HIGH CUT tints the walls (what gets fed into the tank); TONE washes the room warmer or cooler; the walls light up with the source's sound after a gap set by PREDELAY, by an amount set by MIX. SIZE sets how long the tail takes to decay, DAMP how quickly its high end dies away. Click a knob's value to type one. <kbd>Space</kbd> plays the source.</p>
+<p class="help">The room in the screen is the reverb: SIZE grows or shrinks it, DAMP (inversely) raises or lowers its ceiling, WIDTH stretches it and spreads the little listener's ears apart. Drag the listener itself anywhere in the room: closer to the source sounds drier, farther away sounds wetter, and standing off to one side pans the direct sound toward that ear. LOW CUT tints the floor and HIGH CUT tints the walls (what gets fed into the tank); TONE washes the room warmer or cooler; the walls light up with the source's sound after a gap set by PREDELAY, by an amount set by MIX. SIZE sets how long the tail takes to decay, DAMP how quickly its high end dies away. Click a knob's value to type one. <kbd>Space</kbd> plays the source.</p>
 </div>
 </div>
 
@@ -218,7 +218,8 @@
 function makeDefaults(){
   return {
     sizePct: 50, dampPct: 40, predelayMs: 20, widthPct: 100,
-    lowCutHz: 150, highCutHz: 8000, tonePct: 65, mixPct: 35
+    lowCutHz: 150, highCutHz: 8000, tonePct: 65, mixPct: 35,
+    listenerX: 0, listenerY: 50   // where you stand in the room (-100..100 each), drag it in the screen
   };
 }
 
@@ -282,6 +283,8 @@ function ReverbEngine(fs){
   this.highCutHz = 8000; this.tHighCutHz = 8000;
   this.tonePct = 65; this.tTonePct = 65;
   this.mixPct = 35; this.tMixPct = 35;
+  this.listenerX = 0; this.tListenerX = 0; this.listenerY = 50; this.tListenerY = 50;
+  this.distMix = 1; this.panGL = 1; this.panGR = 1;
   this.power = 1; this.tPower = 1;
   this.glide = 1 - Math.exp(-1 / (0.05 * fs));
 
@@ -305,6 +308,7 @@ function ReverbEngine(fs){
 ReverbEngine.prototype.setParams = function(p){
   this.tSize = p.sizePct; this.tDamp = p.dampPct; this.tPredelayMs = p.predelayMs; this.tWidthPct = p.widthPct;
   this.tLowCutHz = p.lowCutHz; this.tHighCutHz = p.highCutHz; this.tTonePct = p.tonePct; this.tMixPct = p.mixPct;
+  this.tListenerX = p.listenerX; this.tListenerY = p.listenerY;
   this.tPower = p.power ? 1 : 0;
 };
 // inL/inR: input (Float32Array); outL/outR: output; n samples.
@@ -319,6 +323,8 @@ ReverbEngine.prototype.process = function(inL, inR, outL, outR, n){
     this.highCutHz += (this.tHighCutHz - this.highCutHz) * k;
     this.tonePct += (this.tTonePct - this.tonePct) * k;
     this.mixPct += (this.tMixPct - this.mixPct) * k;
+    this.listenerX += (this.tListenerX - this.listenerX) * k;
+    this.listenerY += (this.tListenerY - this.listenerY) * k;
     this.power += (this.tPower - this.power) * k;
 
     if (this._cc % 64 === 0) {
@@ -326,6 +332,16 @@ ReverbEngine.prototype.process = function(inL, inR, outL, outR, n){
       this.preLpfL.setLpf(this.highCutHz, 0.71, fs); this.preLpfR.setLpf(this.highCutHz, 0.71, fs);
       var toneHz = 1500 + (this.tonePct / 100) * 15000;
       this.toneL.setLpf(toneHz, 0.71, fs); this.toneR.setLpf(toneHz, 0.71, fs);
+
+      // where you stand changes the sound: farther from the source (which sits at the
+      // back, (0,-0.5) in the room's own -1..1 units), the more the reverberant field
+      // dominates over the direct sound -- and off-centre left/right pans the direct
+      // sound toward that ear, the way your two ears actually localize it
+      var lx = this.listenerX / 100, ly = this.listenerY / 100;
+      var dist = Math.sqrt(lx * lx + (ly + 0.5) * (ly + 0.5));
+      this.distMix = Math.max(0.6, Math.min(1.4, 0.6 + Math.min(1.3, dist / 2) * 0.8));   // =1 at the default spot
+      var panNorm = Math.max(-1, Math.min(1, lx)), panAngle = (panNorm * 0.5 + 0.5) * (Math.PI / 2);
+      this.panGL = Math.cos(panAngle) * Math.SQRT2; this.panGR = Math.sin(panAngle) * Math.SQRT2;
     }
     this._cc++;
 
@@ -364,8 +380,9 @@ ReverbEngine.prototype.process = function(inL, inR, outL, outR, n){
     var mid = (sumL + sumR) * 0.5, side = (sumL - sumR) * 0.5 * widthAmt;
     var wetL = mid + side, wetR = mid - side;
 
-    var mix = this.mixPct / 100;
-    var mixedL = dl + mix * (wetL - dl), mixedR = dr + mix * (wetR - dr);
+    var mix = Math.max(0, Math.min(1, (this.mixPct / 100) * this.distMix));
+    var pdl = dl * this.panGL, pdr = dr * this.panGR;
+    var mixedL = pdl + mix * (wetL - pdl), mixedR = pdr + mix * (wetR - pdr);
     var ol = dl + this.power * (mixedL - dl), or = dr + this.power * (mixedR - dr);
     outL[i] = ol; outR[i] = or;
 
@@ -1017,12 +1034,13 @@ if (typeof registerProcessor === 'function') {
 
   // the room's own displayed state glides toward the knobs' targets, so turning Size
   // or Width is seen as the room actually growing, not snapping
-  var roomVis = { size: params.sizePct, damp: params.dampPct, width: params.widthPct, predelay: params.predelayMs, lowcut: params.lowCutHz, highcut: params.highCutHz, tone: params.tonePct, mix: params.mixPct };
+  var roomVis = { size: params.sizePct, damp: params.dampPct, width: params.widthPct, predelay: params.predelayMs, lowcut: params.lowCutHz, highcut: params.highCutHz, tone: params.tonePct, mix: params.mixPct, listenerX: params.listenerX, listenerY: params.listenerY };
   function roomSettled(){
     return Math.abs(roomVis.size - params.sizePct) < 0.05 && Math.abs(roomVis.damp - params.dampPct) < 0.05 &&
            Math.abs(roomVis.width - params.widthPct) < 0.05 && Math.abs(roomVis.predelay - params.predelayMs) < 0.05 &&
            Math.abs(roomVis.lowcut - params.lowCutHz) < 1 && Math.abs(roomVis.highcut - params.highCutHz) < 1 &&
-           Math.abs(roomVis.tone - params.tonePct) < 0.05 && Math.abs(roomVis.mix - params.mixPct) < 0.05;
+           Math.abs(roomVis.tone - params.tonePct) < 0.05 && Math.abs(roomVis.mix - params.mixPct) < 0.05 &&
+           Math.abs(roomVis.listenerX - params.listenerX) < 0.05 && Math.abs(roomVis.listenerY - params.listenerY) < 0.05;
   }
   function updateRoomVis(){
     var k = 0.08;
@@ -1034,6 +1052,8 @@ if (typeof registerProcessor === 'function') {
     roomVis.highcut += (params.highCutHz - roomVis.highcut) * k;
     roomVis.tone += (params.tonePct - roomVis.tone) * k;
     roomVis.mix += (params.mixPct - roomVis.mix) * k;
+    roomVis.listenerX += (params.listenerX - roomVis.listenerX) * k;
+    roomVis.listenerY += (params.listenerY - roomVis.listenerY) * k;
   }
 
   // a short history of the source's own glow, so the walls can be lit with a delayed
@@ -1063,6 +1083,22 @@ if (typeof registerProcessor === 'function') {
     return glowHistory[0].v;
   }
 
+  // the room's own geometry, shared between drawing and the listener-drag hit-testing
+  // below -- a straight-down floor-plan view, no perspective
+  function roomGeom(){
+    var W = hView.w, H = hView.h;
+    var cx = W / 2, cy = H / 2;
+    var sizeT = roomVis.size / 100;
+    var widthT = Math.max(0, Math.min(1, roomVis.width / 200));
+    var stretch = 0.78 + widthT * 0.68;
+    var R = Math.min(W, H) * 0.34 * (0.55 + sizeT * 0.85);
+    return {
+      cx: cx, cy: cy, stretch: stretch, R: R, hw: R * stretch, hd: R,
+      proj: function(x, y){ return { x: cx + x * stretch, y: cy + y }; },
+      unproj: function(px, py){ return { x: (px - cx) / stretch, y: py - cy }; }
+    };
+  }
+
   function drawRoom(){
     var dpr = hView.dpr, W = hView.w, H = hView.h;
     if (!W) return;
@@ -1071,24 +1107,18 @@ if (typeof registerProcessor === 'function') {
     grd.addColorStop(0, T.bgTop); grd.addColorStop(1, T.bgBottom);
     hg.fillStyle = grd; hg.fillRect(0, 0, W, H);
 
-    // a straight-down floor-plan view: no perspective, just the room's own flat shape
-    var cx = W / 2, cy = H / 2;
+    var g = roomGeom(), cx = g.cx, cy = g.cy, stretch = g.stretch, R = g.R, hw = g.hw, hd = g.hd, proj = g.proj;
     var sizeT = roomVis.size / 100;
     var widthT = Math.max(0, Math.min(1, roomVis.width / 200));
-    var stretch = 0.78 + widthT * 0.68;
-    var R = Math.min(W, H) * 0.34 * (0.55 + sizeT * 0.85);
-    var hw = R * stretch, hd = R;
     var borderW = 6 + (roomVis.damp / 100) * 13;   // more Damp reads as heavier, closer-in walls
-
-    function proj(x, y){ return { x: cx + x * stretch, y: cy + y }; }
 
     var lowT = toT(KNOB_DEFS.lowcut, roomVis.lowcut), highT = toT(KNOB_DEFS.highcut, roomVis.highcut);
     var floorColor = mixHex(T.roomFloorCool, T.roomFloorWarm, lowT);
     var wallBase = mixHex(T.roomWallDim, T.roomWallBright, highT);
 
-    // two points on the floor: the sound source (toward the back) and the listener
-    // (out front), a little head that turns to face wherever the source is
-    var sourceLocal = { x: 0, y: -R * 0.5 }, headLocal = { x: 0, y: R * 0.5 };
+    // two points on the floor: the sound source (fixed, toward the back) and the
+    // listener -- drag it anywhere in the room; the sound follows
+    var sourceLocal = { x: 0, y: -R * 0.5 }, headLocal = { x: R * (roomVis.listenerX / 100), y: R * (roomVis.listenerY / 100) };
     var srcP = proj(sourceLocal.x, sourceLocal.y), headP = proj(headLocal.x, headLocal.y);
 
     // the source's glow (direct, undelayed) and the walls' glow (delayed by Predelay,
@@ -1186,6 +1216,31 @@ if (typeof registerProcessor === 'function') {
     [left, right].forEach(function(p){ hg.beginPath(); hg.arc(p.x, p.y, earR, 0, Math.PI * 2); hg.fill(); hg.stroke(); });
     hg.restore();
   }
+
+  // ---------- drag the listener anywhere in the room -- the sound follows: a wall
+  // border's worth of margin keeps it from landing right on top of a wall ----------
+  var listenerDragging = false;
+  function roomPointerPos(e){ var r = historyCanvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  function setListenerFromPoint(px, py){
+    var g = roomGeom(), u = g.unproj(px, py), lim = 0.92;
+    params.listenerX = Math.round(Math.max(-lim, Math.min(lim, u.x / g.R)) * 100);
+    params.listenerY = Math.round(Math.max(-lim, Math.min(lim, u.y / g.R)) * 100);
+    roomVis.listenerX = params.listenerX; roomVis.listenerY = params.listenerY;   // track the cursor with no lag while held
+    changed();
+  }
+  historyCanvas.style.cursor = 'pointer';
+  historyCanvas.addEventListener('pointerdown', function(e){
+    listenerDragging = true; historyCanvas.setPointerCapture(e.pointerId); beginGesture();
+    var p = roomPointerPos(e); setListenerFromPoint(p.x, p.y);
+  });
+  historyCanvas.addEventListener('pointermove', function(e){
+    if (!listenerDragging) return;
+    var p = roomPointerPos(e); setListenerFromPoint(p.x, p.y);
+  });
+  historyCanvas.addEventListener('pointerup', function(){
+    if (!listenerDragging) return;
+    listenerDragging = false; endGesture(); requestDraw();
+  });
 
   var meterShown = [0, 0, 0, 0];
   function onMeter(m){
